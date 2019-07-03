@@ -1,5 +1,6 @@
-// I burned up the FET/high side switch and ATTiny25 on my mausberry car supply.  I couldn't recover the binary off the
-// flash, so I'm writing replacement firmware instead.
+// I burned up the FET/high side switch and ATTiny25 on my Mausberry 3A car supply.  I couldn't recover the 
+// original binary, so I'm writing replacement firmware instead.  I haven't tried contacting Mausberry - 
+// this is just for fun.
 //
 // BOM: 
 // BTS5090 - High side switch - switches 12V BAT to DC-DC converter
@@ -12,11 +13,11 @@
 // Principle of operation:
 // When 12V SWITCHED is turned on, the little 2204 provides 5v to the microcontroller (uC).  The uC
 // immediately turns on the BTS5090 which provides 12V BAT to the main DC-DC converter.  This powers up the pi.
-// When 12V SWITCHED is turned off, the uC continues to run off of 12V BAT via the DC-DC converter through the common 
-// cathode diode arrangement.  The pi is notified via PI_IN.  When PI_OUT goes low (or timeout maybe?) the uC turns off the 
-// BTS5090 which powers down the entire circuit.
+// When 12V SWITCHED is turned off, the uC continues to run off of 12V BAT via the DC-DC converter through 
+// the common cathode diode arrangement.  The pi is notified via PI_IN.  When PI_OUT goes low (or timeout 
+// maybe?) the uC turns off the BTS5090 which powers down the entire circuit.
 //          _________
-// RESET ---|   T   |--- VCC
+// RESET ---|1  T   |--- VCC
 //          |   I   |
 // PB3   ---|   N   |--- PB2
 //          |   Y   |
@@ -32,6 +33,8 @@
 // PB1: 5V switched sense
 // PB0: PI_OUT
 
+#include <stdbool.h>
+
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
@@ -45,19 +48,23 @@
 #define SWITCHED_PWR PB1
 #define PI_OUT       PB0
 
-#define LED_DELAY_MS 200
-
 static void enable_timer0(void) {
-	TCCR0B |= _BV(CS02) | _BV(CS00); // F_CPU / 1024
+	TCCR0B |= (_BV(CS02) | _BV(CS00)); // F_CPU / 1024
 }
 
 static void disable_timer0(void) {
 	TCCR0B &= ~(_BV(CS02) | _BV(CS01) | _BV(CS00)); // 0
 }
 
+static bool pi_script_running = false;
 ISR(PCINT0_vect) {
 
 	if (PINB & _BV(PI_OUT)) {
+		// Pi script turn pin high when running.
+		disable_timer0();
+		pi_script_running = true;
+
+	} else if (pi_script_running) {
 		// Pi is requesting power off.  Apply muzzle to temple and depress trigger smoothly.
 		PORTB &= ~_BV(BIG_SWITCH);
 
@@ -67,7 +74,14 @@ ISR(PCINT0_vect) {
 		PORTB &= ~_BV(LED);
 	}
 
-	if (!(PINB & _BV(SWITCHED_PWR))) {
+	if (PINB & _BV(SWITCHED_PWR)) {
+		// Notify Pi the switched power is on
+		PORTB &= ~_BV(PI_IN);
+
+		// Stop blinking the LED
+		disable_timer0();
+		PORTB = PINB | _BV(LED);
+	} else {
 		// Notify Pi the switch is off
 		PORTB |= _BV(PI_IN);
 
@@ -77,23 +91,8 @@ ISR(PCINT0_vect) {
 }
 
 ISR(TIM0_OVF_vect) {
-	// Toggle LED.  At F_CPU = 1MHz and timer 0 running F_CPU/1024, one overflow is roughly 1mS.
-	static int led_state = 1;
-	static int overflows = 0;
-
-	overflows++;
-
-	if (overflows >= LED_DELAY_MS) {
-		if (led_state){
-			PORTB &= ~_BV(LED);
-			led_state = 0;
-		} else {
-			PORTB |= _BV(LED);
-			led_state = 1;
-		}
-		
-		overflows = 0;
-	}
+	// Toggle LED.  At F_CPU = 1MHz and timer 0 running F_CPU/1024, one overflow is roughly 1/4 second.
+	PORTB = PINB ^ _BV(LED);
 }
 
 int main(void) {
@@ -102,14 +101,16 @@ int main(void) {
 	DDRB = _BV(LED) | _BV(BIG_SWITCH) | _BV(PI_IN);
 
 	// Enable Pin Change Interrupts for input pins
-	GIMSK = PCIE;
+	GIMSK = _BV(PCIE);
 	PCMSK = _BV(SWITCHED_PWR) | _BV(PI_OUT);
 
-	// Configure but don't start timer0 to blink the led
+	// Configure and enable timer0 to blink the led 
+	// indicating waiting for pi to start
 	TIMSK = _BV(TOIE0);  // enable overflow int
+	enable_timer0();
 
-	// Turn on main power and the LED
-	PORTB = _BV(LED) | _BV(BIG_SWITCH);
+	// Turn on main power
+	PORTB = _BV(BIG_SWITCH);
 
 	// Enable interrupts and sleep forever.
 	sei();
