@@ -1,11 +1,12 @@
-// I burned up the FET/high side switch and ATTiny25 on my Mausberry 3A car supply.  I couldn't recover the 
-// original binary, so I'm writing replacement firmware instead.  I haven't tried contacting Mausberry - 
-// this is just for fun.
+// I burned up the high side switch and ATTiny25 on my Mausberry 3A car supply.  I left it dangling loose and 
+// it shorted to ground somewhere on the chassis. I couldn't recover the original binary, so I'm writing 
+// replacement firmware instead.  I haven't tried contacting Mausberry and I am in no way affiliated with 
+// Mausberry. This is just for fun.
 //
 // BOM: 
 // BTS5090 - High side switch - switches 12V BAT to DC-DC converter
 // b 150 24 - Polyfuse - 24V 1.5A polyfuse protecting 12V BAT input.
-// '103' 8 pin - 4x 10k resistors.  Used for pull up/down.
+// '103' 8 pin - 4x 10k resistor pack.  Used for pull up/down.
 // unknown 5 pin device - 5V linear regulator e.g. L2204.  Provides 5V when 12V SWITCHED turns on
 // unknown 3 pin device - pair of diodes with common cathode.  This supplies 5v when either supply is on.
 // ATtiny25 - If you're here, you know what this does
@@ -14,8 +15,12 @@
 // When 12V SWITCHED is turned on, the little 2204 provides 5v to the microcontroller (uC).  The uC
 // immediately turns on the BTS5090 which provides 12V BAT to the main DC-DC converter.  This powers up the pi.
 // When 12V SWITCHED is turned off, the uC continues to run off of 12V BAT via the DC-DC converter through 
-// the common cathode diode arrangement.  The pi is notified via PI_IN.  When PI_OUT goes low (or timeout 
-// maybe?) the uC turns off the BTS5090 which powers down the entire circuit.
+// the common cathode diode arrangement.  The pi is notified of power loss via PI_IN.  When PI_OUT goes 
+// low, the uC turns off the BTS5090 which powers down the entire circuit.
+//
+// The LED is configured to blink after power on before the Pi script raises PI_OUT.  The LED then goes solid,
+// indicating normal operation.  When switched power is removed, the LED blinks again, waiting for the PI_OUT
+// pin to go low.  When the PI_OUT pin goes low, main power is removed and the LED goes out.
 //          _________
 // RESET ---|1  T   |--- VCC
 //          |   I   |
@@ -32,6 +37,11 @@
 // PB2: BTS5090 IN
 // PB1: 5V switched sense
 // PB0: PI_OUT
+//
+// NOTE: Pin PB1 is directly connected to 5V, so it cannot be driven by an ISP programmer to
+// program the device while power is present.  The ATTiny25 must be powered externally with 
+// the rest of the circuit unpowered.  I also had to slow the clock way down to successfully 
+// write flash - 100uS (-B 100 for avrdude).
 
 #include <stdbool.h>
 
@@ -60,7 +70,7 @@ static bool pi_script_running = false;
 ISR(PCINT0_vect) {
 
 	if (PINB & _BV(PI_OUT)) {
-		// Pi script turn pin high when running.
+		// Pi script turns the pin high when running.
 		disable_timer0();
 		pi_script_running = true;
 
